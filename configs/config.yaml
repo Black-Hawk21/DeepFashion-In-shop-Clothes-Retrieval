@@ -1,0 +1,94 @@
+# ============================================================
+# Visual Product Search — Master Config
+# ============================================================
+
+# --------------- Paths ---------------
+paths:
+  data_root: "data/deepfashion"
+  img_dir: "data/deepfashion/Img/img"
+  partition_file: "data/deepfashion/Eval/list_eval_partition.txt"
+  bbox_file: "data/deepfashion/Anno/list_bbox_inshop.txt"
+  checkpoint_dir: "checkpoints"
+  index_dir: "index"
+  results_dir: "results"
+
+# --------------- Dataset ---------------
+dataset:
+  image_size: 224          # CLIP input resolution
+  num_workers: 4
+  pin_memory: true
+
+# --------------- CLIP ---------------
+clip:
+  model_name: "ViT-B/32"   # Options: ViT-B/32 | ViT-B/16 | ViT-L/14
+  freeze_text_encoder: true
+  unfreeze_vision_blocks: 4  # Last N transformer blocks to fine-tune
+                              # Set to -1 to fine-tune full vision encoder
+
+# --------------- BLIP-2 ---------------
+blip2:
+  model_name: "Salesforce/blip2-opt-2.7b"
+  device_map: "cuda:0"        # "auto" for multi-GPU, "cuda:0" for single
+  max_new_tokens: 50
+  frozen: true              # Always frozen per assignment spec
+
+# --------------- YOLO ---------------
+yolo:
+  model_name: "yolov8m.pt"  # Any YOLOv8 variant
+  conf_threshold: 0.25
+  iou_threshold: 0.45
+  target_classes: null      # null = detect all; or e.g. [0] for person
+
+# --------------- Embedding ---------------
+embedding:
+  alpha: 0.7                # Image weight; (1-alpha) = text weight
+  embedding_dim: 512        # CLIP ViT-B/32 output dim
+  normalize: true
+
+# --------------- HNSW Index ---------------
+index:
+  backend: "hnswlib"        # "hnswlib" (local) | "milvus" | "pinecone"
+  space: "cosine"
+  ef_construction: 200
+  M: 16
+  ef_search: 100
+
+# --------------- Training ---------------
+train:
+  epochs: 20
+  batch_size: 64
+  learning_rate: 1.0e-5
+  weight_decay: 1.0e-4
+  warmup_steps: 200
+  temperature: 0.07          # InfoNCE / NT-Xent temperature
+  loss: "infonce"            # "infonce" | "supcon" | "triplet"
+  # Margin for triplet loss (only used when loss=triplet)
+  triplet_margin: 0.3
+  # Hard negative mining
+  hard_negatives: true
+  num_hard_negatives: 4
+  # Gradient clipping
+  grad_clip: 1.0
+  # Mixed precision
+  use_amp: true
+  # Checkpoint saving
+  save_every_n_epochs: 2
+  best_metric: "recall@10"
+
+# --------------- Evaluation ---------------
+eval:
+  K_values: [5, 10, 15]
+  batch_size: 128
+  rerank: true              # Apply BLIP-2 ITM re-ranking
+  rerank_top_n: 50          # Re-rank top-N before returning top-K
+
+# --------------- Ablation Seeds ---------------
+ablation:
+  seeds: [42, 7, 13, 21]   # Replace with team roll numbers
+  alpha_values: [0.5, 0.7]
+
+# --------------- Logging ---------------
+logging:
+  use_wandb: false
+  project_name: "visual-product-search"
+  log_every_n_steps: 50
