@@ -5,7 +5,7 @@
 # --------------- Paths ---------------
 paths:
   data_root: "data/deepfashion"
-  img_dir: "data/deepfashion/Img/img"
+  img_dir: "data/deepfashion"
   partition_file: "data/deepfashion/Eval/list_eval_partition.txt"
   bbox_file: "data/deepfashion/Anno/list_bbox_inshop.txt"
   checkpoint_dir: "checkpoints"
@@ -84,7 +84,7 @@ eval:
 
 # --------------- Ablation Seeds ---------------
 ablation:
-  seeds: [42, 7, 13, 21]   # Replace with team roll numbers
+  seeds: [510, 051]   # Replace with team roll numbers
   alpha_values: [0.5, 0.7]
 
 # --------------- Logging ---------------
