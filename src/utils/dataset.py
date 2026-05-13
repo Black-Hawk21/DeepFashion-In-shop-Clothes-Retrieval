@@ -64,7 +64,14 @@ class DeepFashionDataset(Dataset):
     For query/gallery, returns (image_tensor, item_id, img_path).
     """
 
-    def __init__(self, cfg, split: str = "train", transform=None):
+    def __init__(
+        self,
+        cfg,
+        split: str = "train",
+        transform=None,
+        samples: Optional[List[Tuple[str, str]]] = None,
+        return_pairs: Optional[bool] = None,
+    ):
         """
         Args:
             cfg: OmegaConf config object.
@@ -79,8 +86,16 @@ class DeepFashionDataset(Dataset):
         self.transform = transform
 
         # Load partition
-        partition = load_partition(cfg.paths.partition_file)
-        self.samples: List[Tuple[str, str]] = partition[split]  # (img_rel_path, item_id)
+        if samples is None:
+            partition = load_partition(cfg.paths.partition_file)
+            self.samples = partition[split]  # (img_rel_path, item_id)
+        else:
+            self.samples = samples
+
+        if return_pairs is None:
+            self.return_pairs = (split == "train")
+        else:
+            self.return_pairs = return_pairs
 
         # Build item_id -> [indices] map (needed for positive sampling in train)
         self.item_to_indices: Dict[str, List[int]] = {}
@@ -105,7 +120,7 @@ class DeepFashionDataset(Dataset):
         img_path, item_id = self.samples[idx]
         img = self._load_image(img_path)
 
-        if self.split == "train":
+        if self.return_pairs:
             # Sample a positive (different image, same item_id)
             pos_indices = self.item_to_indices[item_id]
             if len(pos_indices) > 1:
@@ -134,12 +149,21 @@ class DeepFashionDataset(Dataset):
 #  Dataloader factory                                                  #
 # ------------------------------------------------------------------ #
 
-def build_dataloader(cfg, split: str, clip_model_name: Optional[str] = None) -> DataLoader:
+def build_dataloader(
+    cfg,
+    split: str,
+    clip_model_name: Optional[str] = None,
+    samples: Optional[List[Tuple[str, str]]] = None,
+    return_pairs: Optional[bool] = None,
+    preprocess=None,
+) -> DataLoader:
     """
     Build a DataLoader for the given split.
     If clip_model_name is provided, uses the CLIP preprocessing transform.
     """
-    if clip_model_name:
+    if preprocess is not None:
+        transform = preprocess
+    elif clip_model_name:
         _, preprocess = clip.load(clip_model_name, device="cpu")
         transform = preprocess
     else:
@@ -152,10 +176,17 @@ def build_dataloader(cfg, split: str, clip_model_name: Optional[str] = None) -> 
                                  std=[0.229, 0.224, 0.225]),
         ])
 
-    dataset = DeepFashionDataset(cfg, split=split, transform=transform)
+    dataset = DeepFashionDataset(
+        cfg,
+        split=split,
+        transform=transform,
+        samples=samples,
+        return_pairs=return_pairs,
+    )
 
-    shuffle = (split == "train")
-    batch_size = cfg.train.batch_size if split == "train" else cfg.eval.batch_size
+    is_train_pairs = return_pairs if return_pairs is not None else (split == "train")
+    shuffle = is_train_pairs
+    batch_size = cfg.train.batch_size if is_train_pairs else cfg.eval.batch_size
 
     loader = DataLoader(
         dataset,
@@ -163,6 +194,6 @@ def build_dataloader(cfg, split: str, clip_model_name: Optional[str] = None) -> 
         shuffle=shuffle,
         num_workers=cfg.dataset.num_workers,
         pin_memory=cfg.dataset.pin_memory,
-        drop_last=(split == "train"),
+        drop_last=is_train_pairs,
     )
     return loader

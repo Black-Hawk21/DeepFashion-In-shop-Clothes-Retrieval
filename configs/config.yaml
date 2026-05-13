@@ -57,6 +57,7 @@ index:
 train:
   epochs: 20
   batch_size: 64
+  val_ratio: 0.1
   learning_rate: 1.0e-5
   weight_decay: 1.0e-4
   warmup_steps: 200

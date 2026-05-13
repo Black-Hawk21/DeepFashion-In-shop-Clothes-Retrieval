@@ -25,13 +25,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import torch
+import numpy as np
 from torch.cuda.amp import GradScaler, autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from tqdm import tqdm
 
 from src.models.clip_model import CLIPFineTuner, build_loss
-from src.utils.dataset import build_dataloader
+from src.utils.dataset import DeepFashionDataset, build_dataloader, load_partition
 from src.utils.helpers import (
     get_device, get_logger, load_config,
     save_checkpoint, save_results, set_seed,
@@ -117,24 +118,36 @@ def train_one_epoch(
 
 
 # ------------------------------------------------------------------ #
-#  Quick retrieval eval on query/gallery split                         #
+#  Quick retrieval eval on train-derived val split                     #
 # ------------------------------------------------------------------ #
 
 @torch.no_grad()
-def quick_eval(model, cfg, device, logger):
+def quick_eval(model, cfg, device, logger, query_samples, gallery_samples, preprocess):
     """
-    Encode query and gallery splits with the current model weights
-    and compute Recall@10 as an early-stopping signal.
+    Encode train-derived validation query/gallery splits with the current
+    model weights and compute Recall@K as an early-stopping signal.
     """
     import numpy as np
-    from src.utils.dataset import DeepFashionDataset
-    import clip
     from torch.utils.data import DataLoader
 
-    _, preprocess = clip.load(cfg.clip.model_name, device="cpu")
+    if not query_samples or not gallery_samples:
+        logger.warning("Validation split is empty; skipping quick_eval.")
+        return {}
 
-    query_ds = DeepFashionDataset(cfg, split="query", transform=preprocess)
-    gallery_ds = DeepFashionDataset(cfg, split="gallery", transform=preprocess)
+    query_ds = DeepFashionDataset(
+        cfg,
+        split="train",
+        transform=preprocess,
+        samples=query_samples,
+        return_pairs=False,
+    )
+    gallery_ds = DeepFashionDataset(
+        cfg,
+        split="train",
+        transform=preprocess,
+        samples=gallery_samples,
+        return_pairs=False,
+    )
 
     def encode_split(ds):
         dl = DataLoader(ds, batch_size=cfg.eval.batch_size, shuffle=False,
@@ -183,6 +196,61 @@ def main():
         device=device,
     ).to(device)
 
+    # Build train/val splits from the official train partition
+    partition = load_partition(cfg.paths.partition_file)
+    train_samples_all = partition["train"]
+    val_ratio = getattr(cfg.train, "val_ratio", 0.1)
+
+    if val_ratio <= 0:
+        train_samples = train_samples_all
+        val_samples = []
+    else:
+        rng = np.random.RandomState(seed)
+        item_to_samples = {}
+        for img_path, item_id in train_samples_all:
+            item_to_samples.setdefault(item_id, []).append((img_path, item_id))
+
+        item_ids = list(item_to_samples.keys())
+        rng.shuffle(item_ids)
+
+        n_val = max(1, int(len(item_ids) * val_ratio))
+        val_items = set(item_ids[:n_val])
+
+        train_samples = []
+        val_samples = []
+        for item_id, item_samples in item_to_samples.items():
+            if item_id in val_items:
+                val_samples.extend(item_samples)
+            else:
+                train_samples.extend(item_samples)
+
+    # Create val query/gallery splits (per item_id)
+    rng = np.random.RandomState(seed)
+    item_to_paths = {}
+    for img_path, item_id in val_samples:
+        item_to_paths.setdefault(item_id, []).append(img_path)
+
+    val_query_samples = []
+    val_gallery_samples = []
+    skipped_items = 0
+    for item_id, paths in item_to_paths.items():
+        if len(paths) < 2:
+            skipped_items += 1
+            continue
+        rng.shuffle(paths)
+        val_query_samples.append((paths[0], item_id))
+        for p in paths[1:]:
+            val_gallery_samples.append((p, item_id))
+
+    logger.info(
+        "Train/val split: "
+        f"train_samples={len(train_samples)}  "
+        f"val_samples={len(val_samples)}  "
+        f"val_query={len(val_query_samples)}  "
+        f"val_gallery={len(val_gallery_samples)}  "
+        f"val_items_skipped={skipped_items}"
+    )
+
     # Loss
     criterion = build_loss(cfg)
 
@@ -222,8 +290,13 @@ def main():
         start_epoch = state.get("epoch", 0) + 1
 
     # DataLoader
-    train_loader = build_dataloader(cfg, split="train",
-                                    clip_model_name=cfg.clip.model_name)
+    train_loader = build_dataloader(
+        cfg,
+        split="train",
+        samples=train_samples,
+        return_pairs=True,
+        preprocess=model.preprocess,
+    )
 
     logger.info(f"Starting training for {cfg.train.epochs} epochs "
                 f"with loss={cfg.train.loss}, α_temp={cfg.train.temperature}")
@@ -240,7 +313,15 @@ def main():
         # Evaluate periodically
         metrics = {}
         if epoch % cfg.train.save_every_n_epochs == 0 or epoch == cfg.train.epochs:
-            metrics = quick_eval(model, cfg, device, logger)
+            metrics = quick_eval(
+                model,
+                cfg,
+                device,
+                logger,
+                val_query_samples,
+                val_gallery_samples,
+                model.preprocess,
+            )
             current_best_metric = metrics.get(cfg.train.best_metric, 0.0)
             is_best = current_best_metric > best_metric
             if is_best:
