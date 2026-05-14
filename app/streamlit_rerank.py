@@ -50,6 +50,7 @@ IMG_ROOT        = "data/Img/img"
 CLIP_CHECKPOINT = "checkpoints/best_model.pt"
 INDEX_BIN       = "index/Cond_C/hnsw_alpha0.5_seed51.bin"
 INDEX_META      = "index/Cond_C/metadata_alpha0.5_seed51.json"
+GALLERY_CAPTIONS = "index/gallery_captions.json"
 
 # BLIP-2: same model used offline for captioning, reused here for ITM re-ranking.
 # No new download — uses your existing HuggingFace cache.
@@ -154,8 +155,6 @@ def load_index():
         meta = json.load(f)
 
     gallery_ids = meta.get("gallery_ids", meta.get("item_ids", []))
-    # Captions pre-computed during offline indexing and stored in metadata
-    gallery_captions = meta.get("gallery_captions", {})
     dim = meta.get("dim", 512)
     n_items = meta.get("n_items", len(gallery_ids))
 
@@ -163,7 +162,18 @@ def load_index():
     index.load_index(idx_path, max_elements=n_items)
     index.set_ef(100)
 
-    return index, gallery_ids, gallery_captions, idx_path
+    return index, gallery_ids, idx_path
+
+
+@st.cache_data(show_spinner=False)
+def load_gallery_captions():
+    """Load pre-computed gallery captions from index/gallery_captions.json."""
+    captions_path = Path(GALLERY_CAPTIONS)
+    if not captions_path.exists():
+        st.warning(f"Gallery captions not found at {captions_path} — ITM scores will be 0.")
+        return {}
+    with open(captions_path) as f:
+        return json.load(f)
 
 
 @st.cache_data(show_spinner=False)
@@ -434,7 +444,8 @@ if uploaded is None:
 clip_model, clip_preprocess, n_clip_params = load_clip()
 blip2_processor, blip2_model = load_blip2()
 yolo_model = load_yolo()
-index, gallery_ids, gallery_captions, idx_path = load_index()
+index, gallery_ids, idx_path = load_index()
+gallery_captions = load_gallery_captions()
 gallery_items = load_gallery_items()
 
 with st.sidebar:
