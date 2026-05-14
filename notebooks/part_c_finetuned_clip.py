@@ -38,14 +38,14 @@ from transformers import Blip2Processor, Blip2ForConditionalGeneration
 DATA_ROOT      = "data/deepfashion"
 PARTITION_FILE = f"{DATA_ROOT}/Eval/list_eval_partition.txt"
 BBOX_FILE      = f"{DATA_ROOT}/Anno/list_bbox_inshop.txt"
-OUTPUT_DIR     = "results/condC"
-INDEX_DIR      = "index/condC"
+OUTPUT_DIR     = "results/Cond_C"
+INDEX_DIR      = "index/Cond_C"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(INDEX_DIR, exist_ok=True)
 
-CLIP_CHECKPOINT = "checkpoints/best_model.pt"  # <-- EDIT THIS
+CLIP_CHECKPOINT = "./checkpoints/best_model.pt"  # <-- EDIT THIS
 
-CAPTION_CACHE = "results/condB/gallery_captions.json"
+CAPTION_CACHE = "results/Cond_B/gallery_captions.json"
 
 # ===== MODEL CONFIG =====
 CLIP_MODEL_NAME        = "ViT-B/32"
@@ -54,7 +54,7 @@ UNFREEZE_VISION_BLOCKS = 4    # Must match the value used during training
 
 # ===== EVALUATION CONFIG =====
 K_VALUES     = [5, 10, 15]
-SEEDS        = [510, 51]
+SEEDS        = [510, 51, 105]
 ALPHA_VALUES = [0.5, 0.7]
 
 HNSW_EF_CONSTRUCTION = 200
@@ -263,32 +263,6 @@ bbox_map = load_bbox_annotations(BBOX_FILE)
 gallery_samples = partition["gallery"]
 query_samples   = partition["query"]
 
-# Build the CLIPFineTuner and load checkpoint
-print(f"\n[Model] Building CLIPFineTuner (unfreeze_blocks={UNFREEZE_VISION_BLOCKS})...")
-model = CLIPFineTuner(CLIP_MODEL_NAME, UNFREEZE_VISION_BLOCKS, DEVICE).to(DEVICE)
-
-print(f"[Model] Loading checkpoint: {CLIP_CHECKPOINT}")
-checkpoint = torch.load(CLIP_CHECKPOINT, map_location=DEVICE)
-
-# Handle both checkpoint formats:
-#   train_clip.py saves: {"epoch": ..., "model_state_dict": {...}, ...}
-#   direct state_dict:   {"visual.conv1.weight": ..., ...}
-if "model_state_dict" in checkpoint:
-    model.load_state_dict(checkpoint["model_state_dict"])
-    epoch = checkpoint.get("epoch", "?")
-    metrics = checkpoint.get("metrics", {})
-    print(f"  Loaded checkpoint from epoch {epoch}")
-    if metrics:
-        print(f"  Training metrics: {json.dumps({k: f'{v:.4f}' for k, v in metrics.items() if isinstance(v, float)}, indent=2)}")
-else:
-    # Assume it's a raw state_dict
-    model.load_state_dict(checkpoint)
-    print(f"  Loaded raw state_dict")
-
-model.eval()
-preprocess = model.preprocess
-print("[Model] Fine-tuned CLIP ready ✓")
-
 # Cache paths
 GALLERY_IMG_EMB_PATH = f"{OUTPUT_DIR}/gallery_img_embs_ft.npy"
 GALLERY_IDS_PATH     = f"{OUTPUT_DIR}/gallery_ids.json"
@@ -297,6 +271,39 @@ QUERY_IDS_PATH       = f"{OUTPUT_DIR}/query_ids.json"
 GALLERY_TXT_EMB_PATH = f"{OUTPUT_DIR}/gallery_txt_embs_ft.npy"
 LOCAL_CAPTION_PATH   = f"{OUTPUT_DIR}/gallery_captions.json"
 
+# Check which caches exist — only load CLIP model if something is missing
+need_clip = (
+    not cache_exists(GALLERY_IMG_EMB_PATH, GALLERY_IDS_PATH) or
+    not cache_exists(QUERY_EMB_PATH, QUERY_IDS_PATH) or
+    not cache_exists(GALLERY_TXT_EMB_PATH)
+)
+
+caption_source = CAPTION_CACHE if os.path.exists(CAPTION_CACHE) else LOCAL_CAPTION_PATH
+need_blip = not os.path.exists(caption_source)
+
+model = None
+
+if need_clip:
+    print(f"\n[Model] Loading CLIP + checkpoint (some embeddings need computing)...")
+    model = CLIPFineTuner(CLIP_MODEL_NAME, UNFREEZE_VISION_BLOCKS, DEVICE).to(DEVICE)
+    print(f"[Model] Loading checkpoint: {CLIP_CHECKPOINT}")
+    checkpoint = torch.load(CLIP_CHECKPOINT, map_location=DEVICE)
+    if "model_state_dict" in checkpoint:
+        model.load_state_dict(checkpoint["model_state_dict"])
+        epoch = checkpoint.get("epoch", "?")
+        metrics = checkpoint.get("metrics", {})
+        print(f"  Loaded checkpoint from epoch {epoch}")
+        if metrics:
+            print(f"  Training metrics: {json.dumps({k: f'{v:.4f}' for k, v in metrics.items() if isinstance(v, float)}, indent=2)}")
+    else:
+        model.load_state_dict(checkpoint)
+        print(f"  Loaded raw state_dict")
+    model.eval()
+    preprocess = model.preprocess
+    print("[Model] Fine-tuned CLIP ready ✓")
+else:
+    print("\n[Skip] All embeddings cached — CLIP model not needed ✓")
+
 # %% Step 1: Gallery image embeddings (fine-tuned CLIP vision)
 if cache_exists(GALLERY_IMG_EMB_PATH, GALLERY_IDS_PATH):
     print("\n[Cache] Loading gallery image embeddings...")
@@ -304,7 +311,7 @@ if cache_exists(GALLERY_IMG_EMB_PATH, GALLERY_IDS_PATH):
 else:
     print("\n[Compute] Embedding gallery images (bbox-cropped, fine-tuned CLIP)...")
     gallery_img_embs, gallery_ids = embed_images(
-        gallery_samples, model, preprocess, bbox_map, "Gallery"
+        gallery_samples, model, model.preprocess, bbox_map, "Gallery"
     )
     save_embeddings(gallery_img_embs, gallery_ids, GALLERY_IMG_EMB_PATH, GALLERY_IDS_PATH)
 
@@ -315,13 +322,11 @@ if cache_exists(QUERY_EMB_PATH, QUERY_IDS_PATH):
 else:
     print("\n[Compute] Embedding query images (bbox-cropped, fine-tuned CLIP)...")
     query_embs, query_ids = embed_images(
-        query_samples, model, preprocess, bbox_map, "Queries"
+        query_samples, model, model.preprocess, bbox_map, "Queries"
     )
     save_embeddings(query_embs, query_ids, QUERY_EMB_PATH, QUERY_IDS_PATH)
 
 # %% Step 3: BLIP-2 captions (on bbox-cropped gallery images)
-caption_source = CAPTION_CACHE if os.path.exists(CAPTION_CACHE) else LOCAL_CAPTION_PATH
-
 if os.path.exists(caption_source):
     print(f"\n[Cache] Loading captions from {caption_source}")
     with open(caption_source) as f:
@@ -377,10 +382,13 @@ else:
     gallery_txt_embs = encode_captions(gallery_captions, model)
     save_np(gallery_txt_embs, GALLERY_TXT_EMB_PATH)
 
-# Free CLIP model from GPU (not needed for eval)
-del model
-gc.collect(); torch.cuda.empty_cache()
-print("\n[Memory] CLIP model unloaded")
+# Free CLIP model if it was loaded
+if model is not None:
+    del model
+    gc.collect(); torch.cuda.empty_cache()
+    print("\n[Memory] CLIP model unloaded")
+else:
+    print("\n[Memory] No model to unload (all from cache)")
 
 # %% Step 5: Evaluate across (α, seed) combinations
 print("\n" + "=" * 60)

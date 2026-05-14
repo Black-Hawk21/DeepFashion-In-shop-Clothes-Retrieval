@@ -37,8 +37,8 @@ from transformers import Blip2Processor, Blip2ForConditionalGeneration
 DATA_ROOT      = "data/deepfashion"
 PARTITION_FILE = f"{DATA_ROOT}/Eval/list_eval_partition.txt"
 BBOX_FILE      = f"{DATA_ROOT}/Anno/list_bbox_inshop.txt"
-OUTPUT_DIR     = "results/condB"
-INDEX_DIR      = "index/condB"
+OUTPUT_DIR     = "results/Cond_B"
+INDEX_DIR      = "index/Cond_B"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(INDEX_DIR, exist_ok=True)
 
@@ -46,7 +46,7 @@ CLIP_MODEL_NAME = "ViT-B/32"
 BLIP2_MODEL     = "Salesforce/blip2-opt-2.7b"
 
 K_VALUES     = [5, 10, 15]
-SEEDS        = [510, 51]
+SEEDS        = [510, 51, 105]
 ALPHA_VALUES = [0.5, 0.7]
 
 HNSW_EF_CONSTRUCTION = 200

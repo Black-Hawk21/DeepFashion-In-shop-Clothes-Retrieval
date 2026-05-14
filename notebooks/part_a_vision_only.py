@@ -31,14 +31,14 @@ import hnswlib
 DATA_ROOT      = "data/deepfashion"
 PARTITION_FILE = f"{DATA_ROOT}/Eval/list_eval_partition.txt"
 BBOX_FILE      = f"{DATA_ROOT}/Anno/list_bbox_inshop.txt"
-OUTPUT_DIR     = "results/condA"
-INDEX_DIR      = "index/condA"
+OUTPUT_DIR     = "./results/Cond_A"
+INDEX_DIR      = "./index/Cond_A"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(INDEX_DIR, exist_ok=True)
 
 CLIP_MODEL_NAME = "ViT-B/32"
 K_VALUES        = [5, 10, 15]
-SEEDS           = [510, 51]
+SEEDS           = [510, 51, 105]
 
 HNSW_EF_CONSTRUCTION = 200
 HNSW_M               = 16
