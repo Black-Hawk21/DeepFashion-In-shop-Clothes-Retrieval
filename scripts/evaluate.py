@@ -223,44 +223,43 @@ def blip2_itm_score(query_image, caption, processor, model):
 
 
 def rerank_with_blip2(ranked_indices, query_images, gallery_captions,
-                      processor, model, top_n=50, max_k=15):
+                      processor, model, k):
     """
-    Re-rank HNSW candidates using BLIP-2 ITM scores.
+    Re-rank the top-K HNSW candidates using BLIP-2 ITM scores for a single K.
 
     For each query:
-      1. Take top-N candidates from HNSW
+      1. Take exactly the top-K candidates from HNSW
       2. Score each (query_image, candidate_caption) with BLIP-2
-      3. Sort by ITM score descending → keep top max_k
+      3. Sort by ITM score descending → return re-ranked top-K
 
     Args:
-        ranked_indices   : (Q, top_n) array of HNSW candidate indices
+        ranked_indices   : (Q, >=k) array of HNSW candidate indices
         query_images     : list of PIL Images, one per query
         gallery_captions : list of str captions, indexed by gallery position
         processor, model : BLIP-2 processor and model
-        top_n            : number of HNSW candidates to re-rank
-        max_k            : final number of results to keep
+        k                : number of candidates to re-rank (== the K being evaluated)
 
     Returns:
-        reranked : (Q, max_k) array of re-ranked gallery indices
+        reranked : (Q, k) array of re-ranked gallery indices
     """
     from tqdm import tqdm
 
     Q = len(query_images)
-    reranked = np.zeros((Q, max_k), dtype=np.int64)
+    reranked = np.zeros((Q, k), dtype=np.int64)
 
-    for qi in tqdm(range(Q), desc="BLIP-2 re-ranking"):
-        candidates = ranked_indices[qi, :top_n]
+    for qi in tqdm(range(Q), desc=f"BLIP-2 re-ranking K={k}"):
+        candidates = ranked_indices[qi, :k]
         query_img  = query_images[qi]
 
-        scores = []
-        for ci in candidates:
-            caption = gallery_captions[ci] if ci < len(gallery_captions) else ""
-            score   = blip2_itm_score(query_img, caption, processor, model)
-            scores.append(score)
+        scores = [
+            blip2_itm_score(query_img,
+                            gallery_captions[ci] if ci < len(gallery_captions) else "",
+                            processor, model)
+            for ci in candidates
+        ]
 
-        sorted_order = np.argsort(scores)[::-1]
-        reranked_candidates = candidates[sorted_order[:max_k]]
-        reranked[qi, :len(reranked_candidates)] = reranked_candidates
+        sorted_order        = np.argsort(scores)[::-1]
+        reranked[qi]        = candidates[sorted_order]
 
     return reranked
 
@@ -335,9 +334,14 @@ def load_gallery_captions(results_dir):
 
 def evaluate_single_index(index_path, meta_path, query_emb_path, query_ids_path,
                           K_values=K_VALUES_DEFAULT, ef_search=100, label="",
-                          reranker=None, query_images=None, gallery_captions=None,
-                          rerank_top_n=50):
-    """Evaluate one (index, query-embedding) pair, with optional BLIP-2 re-ranking."""
+                          reranker=None, query_images=None, gallery_captions=None):
+    """
+    Evaluate one (index, query-embedding) pair, with optional BLIP-2 re-ranking.
+
+    When re-ranking is enabled, HNSW retrieves exactly K candidates for each K
+    and BLIP-2 re-ranks those K items. This is done independently per K so that
+    each metric@K is computed on candidates that were re-ranked at that exact depth.
+    """
     print(f"\n{'-'*60}")
     print(f"  {label}")
     print(f"{'-'*60}")
@@ -348,23 +352,41 @@ def evaluate_single_index(index_path, meta_path, query_emb_path, query_ids_path,
     query_embs, query_ids   = load_cached_embeddings(query_emb_path, query_ids_path)
     print(f"  Gallery: {len(gallery_ids)} items  |  Queries: {query_embs.shape}")
 
-    max_k = max(K_values)
-
     if reranker is not None:
-        retrieve_n = max(rerank_top_n, max_k)
-        ranked = search_hnsw(index, query_embs, top_k=retrieve_n, ef_search=ef_search)
-
-        print(f"  Re-ranking top-{rerank_top_n} candidates with BLIP-2 ITM...")
         processor, model = reranker
-        ranked = rerank_with_blip2(
-            ranked, query_images, gallery_captions,
-            processor, model, top_n=rerank_top_n, max_k=max_k
-        )
-        print(f"  Re-ranking complete")
-    else:
-        ranked = search_hnsw(index, query_embs, top_k=max_k, ef_search=ef_search)
+        # Re-rank independently for each K; metrics collected per-K then merged
+        gallery_arr = np.array(gallery_ids)
+        max_k       = max(K_values)
+        all_recalls = {k: [] for k in K_values}
+        all_ndcgs   = {k: [] for k in K_values}
+        all_aps     = {k: [] for k in K_values}
 
-    metrics = evaluate_retrieval(query_ids, gallery_ids, ranked, K_values)
+        # Fetch the maximum K once from HNSW (superset), then slice per K
+        hnsw_ranked = search_hnsw(index, query_embs, top_k=max_k, ef_search=ef_search)
+
+        for k in K_values:
+            print(f"  Re-ranking top-{k} candidates with BLIP-2 ITM  (K={k})...")
+            reranked_k = rerank_with_blip2(
+                hnsw_ranked, query_images, gallery_captions,
+                processor, model, k=k,
+            )
+            for q_idx, q_id in enumerate(query_ids):
+                relevant = (gallery_arr[reranked_k[q_idx]] == q_id)
+                all_recalls[k].append(_recall_at_k(relevant, k))
+                all_ndcgs[k].append(_ndcg_at_k(relevant, k))
+                all_aps[k].append(_ap_at_k(relevant, k))
+
+        metrics = {}
+        for k in K_values:
+            metrics[f"recall@{k}"] = float(np.mean(all_recalls[k]))
+            metrics[f"ndcg@{k}"]   = float(np.mean(all_ndcgs[k]))
+            metrics[f"map@{k}"]    = float(np.mean(all_aps[k]))
+        print("  Re-ranking complete")
+    else:
+        max_k  = max(K_values)
+        ranked = search_hnsw(index, query_embs, top_k=max_k, ef_search=ef_search)
+        metrics = evaluate_retrieval(query_ids, gallery_ids, ranked, K_values)
+
     print(f"\n{format_metrics_table(metrics, K_values)}")
     return metrics
 
@@ -394,7 +416,7 @@ def parse_index_filename(stem):
 def discover_and_evaluate(results_dir, index_dir, condition,
                           K_values, ef_search,
                           reranker=None, query_images=None,
-                          gallery_captions=None, rerank_top_n=50):
+                          gallery_captions=None):
     """
     Auto-discover all index files for a condition and evaluate them.
 
@@ -448,7 +470,7 @@ def discover_and_evaluate(results_dir, index_dir, condition,
             str(bf), str(mf), query_emb, query_ids_path,
             K_values, ef_search, label,
             reranker=reranker, query_images=query_images,
-            gallery_captions=gallery_captions, rerank_top_n=rerank_top_n,
+            gallery_captions=gallery_captions,
         )
 
         key = bf.stem + ("_reranked" if reranker is not None else "")
@@ -562,8 +584,7 @@ def parse_args():
     # Re-ranking options (Cond B & C)
     parser.add_argument("--rerank",       action="store_true",
                         help="Apply BLIP-2 ITM re-ranking for Cond B & C (needs CUDA)")
-    parser.add_argument("--rerank_top_n", type=int, default=50,
-                        help="Number of HNSW candidates to re-rank per query")
+
     parser.add_argument("--blip2_model",  type=str, default="Salesforce/blip2-opt-2.7b")
 
     # Single-index mode
@@ -583,7 +604,7 @@ def main():
     print("  VISUAL PRODUCT SEARCH — EVALUATION")
     print(f"  K = {list(K_values)}")
     if args.rerank:
-        print(f"  BLIP-2 Re-ranking : ON  (top-{args.rerank_top_n})")
+        print(f"  BLIP-2 Re-ranking : ON  (re-ranks exactly top-K per K value)")
     print("=" * 60)
 
     # ---------------------------------------------------------------- #
@@ -608,7 +629,7 @@ def main():
             args.query_emb_path, args.query_ids_path,
             K_values, args.ef_search, "Single Index",
             reranker=reranker, query_images=query_images,
-            gallery_captions=gallery_captions, rerank_top_n=args.rerank_top_n,
+            gallery_captions=gallery_captions,
         )
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)
         with open(args.output, "w") as f:
@@ -641,7 +662,7 @@ def main():
         print(f"  CONDITION {cond}")
         uses_rerank = args.rerank and COND_CONFIG.get(cond, {}).get("rerank", False)
         if uses_rerank:
-            print(f"  + BLIP-2 ITM Re-ranking (top-{args.rerank_top_n})")
+            print(f"  + BLIP-2 ITM Re-ranking (per K)")
         print(f"{'='*60}")
 
         results_dir = f"{args.results_root}/Cond_{cond}"
@@ -668,7 +689,7 @@ def main():
         per_run, aggregated = discover_and_evaluate(
             results_dir, index_dir, cond, K_values, args.ef_search,
             reranker=cond_reranker, query_images=cond_query_images,
-            gallery_captions=cond_gallery_captions, rerank_top_n=args.rerank_top_n,
+            gallery_captions=cond_gallery_captions,
         )
 
         full_report[f"Cond_{cond}"] = {
