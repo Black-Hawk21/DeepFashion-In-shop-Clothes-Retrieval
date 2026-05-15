@@ -543,11 +543,12 @@ if detections:
     all_x2 = max(d["bbox"][2] for d in detections)
     all_y2 = max(d["bbox"][3] for d in detections)
     # Apply the same padding as individual crops so proportions stay consistent
-    union_bbox = _pad_bbox(
-        (all_x1, all_y1, all_x2, all_y2),
-        query_image.size,
-        padding=CROP_PADDING,
-    )
+    # union_bbox = _pad_bbox(
+    #     (all_x1, all_y1, all_x2, all_y2),
+    #     query_image.size,
+    #     padding=CROP_PADDING,
+    # )
+    union_bbox = (all_x1, all_y1, all_x2, all_y2)
     full_body_crop = query_image.crop(union_bbox)
     fb_w, fb_h = full_body_crop.size
 
