@@ -85,7 +85,7 @@ eval:
 
 # --------------- Ablation Seeds ---------------
 ablation:
-  seeds: [510, 051]   # Replace with team roll numbers
+  seeds: [510, 051, 105]   # Replace with team roll numbers
   alpha_values: [0.5, 0.7]
 
 # --------------- Logging ---------------
