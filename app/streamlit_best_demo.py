@@ -166,16 +166,6 @@ def load_index():
     return index, gallery_ids, idx_path
 
 
-# @st.cache_data(show_spinner=False)
-# def load_gallery_captions():
-#     """Load pre-computed gallery captions from index/gallery_captions.json."""
-#     captions_path = Path(GALLERY_CAPTIONS)
-#     if not captions_path.exists():
-#         st.warning(f"Gallery captions not found at {captions_path} — ITM scores will be 0.")
-#         return {}
-#     with open(captions_path) as f:
-#         return json.load(f)
-# @st.cache_data(show_spinner=False)
 def load_gallery_captions():
     captions_path = Path(GALLERY_CAPTIONS)
     if not captions_path.exists():
@@ -190,38 +180,24 @@ def load_gallery_captions():
     if isinstance(data, dict) and "captions" in data and isinstance(data["captions"], list):
         return {str(i): cap for i, cap in enumerate(data["captions"])}
     return data  # already a str-keyed dict
-
-# @st.cache_data(show_spinner=False)
-# def load_gallery_items():
-#     """Build mapping from sequential gallery index to (image_path, item_id)."""
-#     partition_file = f"{DATA_ROOT}/Eval/list_eval_partition.txt"
-#     gallery_items = []
-#     try:
-#         with open(partition_file) as f:
-#             lines = f.read().splitlines()
-#         for line in lines[2:]:
-#             parts = line.strip().split()
-#             if len(parts) >= 3 and parts[2] == "gallery":
-#                 gallery_items.append((parts[0], parts[1]))
-#     except FileNotFoundError:
-#         pass
-#     return gallery_items
 
 @st.cache_data(show_spinner=False)
-def load_gallery_captions():
-    captions_path = Path(GALLERY_CAPTIONS)
-    if not captions_path.exists():
-        st.warning(f"Gallery captions not found at {captions_path} — ITM scores will be 0.")
-        return {}
-    with open(captions_path) as f:
-        data = json.load(f)
-    
-    # Handle both formats:
-    # Format A: {"captions": [...]}  ← your actual format
-    # Format B: {"0": "caption", "id_00001": "caption", ...}  ← what the code expected
-    if isinstance(data, dict) and "captions" in data and isinstance(data["captions"], list):
-        return {str(i): cap for i, cap in enumerate(data["captions"])}
-    return data  # already a str-keyed dict
+def load_gallery_items():
+    """Build mapping from sequential gallery index to (image_path, item_id)."""
+    partition_file = f"{DATA_ROOT}/Eval/list_eval_partition.txt"
+    gallery_items = []
+    try:
+        with open(partition_file) as f:
+            lines = f.read().splitlines()
+        for line in lines[2:]:
+            parts = line.strip().split()
+            if len(parts) >= 3 and parts[2] == "gallery":
+                gallery_items.append((parts[0], parts[1]))
+    except FileNotFoundError:
+        pass
+    return gallery_items
+
+
 
 @st.cache_data(show_spinner=False)
 def find_first_image_path(img_root):
